@@ -26,10 +26,31 @@ Finder ukáže, kde jste, ale nedovolí jednoduše napsat, kam chcete. Vestavěn
 
 ## Požadavky
 
-- macOS 13 nebo novější. Vyvíjeno a zkoušeno jen na macOS 26 (Tahoe); na jiných verzích může řádek sedět o pár bodů vedle, viz [Doladění](#doladění).
-- Xcode nebo Command Line Tools (`xcode-select --install`) pro sestavení.
+- macOS 13 nebo novější, Apple silicon i Intel. Vyvíjeno a zkoušeno jen na macOS 26 (Tahoe); na jiných verzích může řádek sedět o pár bodů vedle, viz [Doladění](#doladění).
 
 ## Instalace
+
+### Nejjednodušeji: jedním příkazem
+
+Otevřete **Terminál** (stiskněte ⌘Mezerník, napište `Terminál`, stiskněte Enter), vložte tento řádek a stiskněte Enter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thominho/finder-address-bar/main/install.sh | bash
+```
+
+Příkaz aplikaci stáhne, uloží do složky Aplikace a spustí. Nic se nesestavuje a Xcode není potřeba.
+
+### Stažení
+
+1. Stáhněte **[FinderPathBar.zip](https://github.com/Thominho/finder-address-bar/releases/latest/download/FinderPathBar.zip)** a dvojklikem ho rozbalte.
+2. Přetáhněte `FinderPathBar` do složky Aplikace a otevřete ho.
+3. macOS ho napoprvé odmítne otevřít, protože aplikace není notarizovaná u Applu (k tomu je potřeba placený vývojářský účet). Otevřete **Nastavení systému → Soukromí a zabezpečení**, sjeďte dolů ke zprávě o FinderPathBar a klikněte na **Přesto otevřít**. Stačí to udělat jednou.
+
+Instalace jedním příkazem výše na tohle nenarazí.
+
+### Sestavení ze zdrojového kódu
+
+Potřebujete Xcode nebo Command Line Tools (`xcode-select --install`).
 
 ```bash
 git clone https://github.com/Thominho/finder-address-bar.git
@@ -38,17 +59,13 @@ cd finder-address-bar
 open FinderPathBar.app
 ```
 
-Při prvním spuštění se macOS zeptá, jestli smí FinderPathBar ovládat Finder. Povolte to, jinak aplikace nezjistí ani nezmění složku, kterou okno zobrazuje.
+### První spuštění
 
-### Vyhrazení řádku ve Finderu (jednou)
+1. Aplikace se zeptá, jestli má ve Finderu **vyhradit řádek**. Odpovězte ano: Finder pak pod panelem nástrojů drží prázdný řádek (řádek panelů) a adresní řádek leží přesně na něm, takže nic nezakrývá. Nová okna Finderu ho dostanou automaticky; v oknech, která už jsou otevřená, jednou zvolte **Zobrazení → Zobrazit řádek panelů**.
+2. macOS se zeptá, jestli smí FinderPathBar **ovládat Finder**. Povolte to, jinak aplikace nezjistí ani nezmění složku, kterou okno zobrazuje.
+3. V řádku nabídek se objeví ikona složky. Pokud si chcete řádek nechat, zapněte tam **Spouštět po přihlášení**.
 
-Ve Finderu zvolte **Zobrazení → Zobrazit řádek panelů**. Finder pak pod panelem nástrojů drží prázdný řádek a adresní řádek leží přesně na něm, takže nic nezakrývá. Finder si volbu pamatuje pro nová okna; v oknech, která už jsou otevřená, je potřeba příkaz zvolit v každém zvlášť.
-
-Bez tohoto kroku řádek funguje taky, jen v zobrazení seznamu leží přes záhlaví sloupců a v ostatních zobrazeních přes horní část první položky.
-
-### Trvalé používání
-
-Přesuňte `FinderPathBar.app` do složky Aplikace a v nabídce u ikony v řádku nabídek zapněte **Spouštět po přihlášení**.
+Bez vyhrazeného řádku adresní řádek funguje taky, jen v zobrazení seznamu leží přes záhlaví sloupců a v ostatních zobrazeních přes horní část první položky.
 
 ## Jak to funguje
 
@@ -74,16 +91,17 @@ defaults write local.finderpathbar toolbarHeight -float 52
 | `toolbarHeight` | 52 | Výška panelu nástrojů Finderu |
 | `titlebarHeight` | 28 | Výška záhlaví okna, když je panel nástrojů skrytý |
 | `barHeight` | 28 | Výška adresního řádku |
-| `tabBarHeight` | 28 | Výška řádku panelů Finderu |
 | `sidebarGap` | 8 | Mezera mezi bočním panelem a oblastí se soubory |
 | `pathBarHeight` | 30 | Výška řádku cesty Finderu (umístění dole) |
 | `statusBarHeight` | 28 | Výška stavového řádku Finderu (umístění dole) |
 | `windowCornerRadius` | 26 | Zaoblení rohu okna (umístění dole) |
 
+Když se něco chová divně, příkaz `defaults write local.finderpathbar debug -bool true` zapne výpis toho, co aplikace dělá (viz aplikace Konzole).
+
 ## Omezení
 
 - Je to překryv, takže se při tažení nebo změně velikosti okna o zlomek vteřiny opožďuje.
-- Když má okno víc panelů, řádek se posune pod lištu panelů a zakryje řádek pod ní.
+- Když má okno víc panelů, vyhrazený řádek zabere lišta panelů Finderu. V takovém okně se adresní řádek přesune dolů, přes řádek cesty Finderu.
 - Tlačítko **+** pro nový panel je pod řádkem schované. ⌘T funguje dál.
 - Zkoušeno na macOS 26 s výchozím panelem nástrojů Finderu. Jiné verze a styly panelu můžou potřebovat doladění popsané výše.
 

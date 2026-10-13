@@ -26,10 +26,31 @@ Finder shows you where you are, but it does not let you simply type where you wa
 
 ## Requirements
 
-- macOS 13 or later. It was developed and tested on macOS 26 (Tahoe) only; on other versions the bar may sit a few points off, see [Tuning](#tuning).
-- Xcode or the Command Line Tools (`xcode-select --install`) to build it.
+- macOS 13 or later, Apple silicon or Intel. It was developed and tested on macOS 26 (Tahoe) only; on other versions the bar may sit a few points off, see [Tuning](#tuning).
 
 ## Install
+
+### The easy way: one command
+
+Open **Terminal** (press ⌘Space, type `Terminal`, press Enter), paste this line and press Enter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thominho/finder-address-bar/main/install.sh | bash
+```
+
+It downloads the app, puts it into your Applications folder and starts it. Nothing has to be built and Xcode is not needed.
+
+### Download
+
+1. Download **[FinderPathBar.zip](https://github.com/Thominho/finder-address-bar/releases/latest/download/FinderPathBar.zip)** and double-click it to unpack.
+2. Drag `FinderPathBar` into the Applications folder and open it.
+3. macOS refuses to open it the first time, because the app is not notarized by Apple (that needs a paid developer account). Open **System Settings → Privacy & Security**, scroll down to the message about FinderPathBar and click **Open Anyway**. This is needed only once.
+
+The one-command install above does not run into this.
+
+### Build from source
+
+Needs Xcode or the Command Line Tools (`xcode-select --install`).
 
 ```bash
 git clone https://github.com/Thominho/finder-address-bar.git
@@ -38,17 +59,13 @@ cd finder-address-bar
 open FinderPathBar.app
 ```
 
-On first launch macOS asks whether FinderPathBar may control Finder. Allow it, otherwise the app cannot read or change the folder a window shows.
+### First launch
 
-### Reserve the row in Finder (once)
+1. The app asks whether it should **reserve a row** in Finder. Say yes: Finder then keeps an empty row under the toolbar (its tab bar) and the address bar sits exactly on it, so it covers nothing. New Finder windows get the row automatically; in windows that are already open choose **View → Show Tab Bar** once.
+2. macOS asks whether FinderPathBar may **control Finder**. Allow it, otherwise the app cannot read or change the folder a window shows.
+3. A folder icon appears in the menu bar. Turn on **Launch at Login** there if you want to keep the bar.
 
-In Finder choose **View → Show Tab Bar**. Finder then keeps an empty row under the toolbar and the address bar sits exactly on it, so it covers nothing. Finder remembers the setting for new windows; windows that are already open need the menu command once each.
-
-Without this step the bar still works, but it lies over the column headers in list view, or over the top of the first item in the other views.
-
-### Keep it
-
-Move `FinderPathBar.app` to `/Applications` and turn on **Launch at Login** from the menu bar icon.
+Without the reserved row the bar still works, but it lies over the column headers in list view, or over the top of the first item in the other views.
 
 ## How it works
 
@@ -74,16 +91,17 @@ defaults write local.finderpathbar toolbarHeight -float 52
 | `toolbarHeight` | 52 | Height of the Finder toolbar |
 | `titlebarHeight` | 28 | Height of the title bar when the toolbar is hidden |
 | `barHeight` | 28 | Height of the address bar |
-| `tabBarHeight` | 28 | Height of Finder's tab bar |
 | `sidebarGap` | 8 | Gap between the sidebar and the file area |
 | `pathBarHeight` | 30 | Height of Finder's path bar (bottom placement) |
 | `statusBarHeight` | 28 | Height of Finder's status bar (bottom placement) |
 | `windowCornerRadius` | 26 | Corner radius of the window (bottom placement) |
 
+If something misbehaves, `defaults write local.finderpathbar debug -bool true` makes the app log what it does (see Console.app).
+
 ## Limitations
 
 - It is an overlay, so it trails a fraction of a second behind while you drag or resize a window.
-- With more than one tab in a window the bar moves below the tab strip and covers the row under it.
+- With more than one tab in a window, Finder's tab strip takes the reserved row. In that window the bar moves to the bottom, over Finder's path bar.
 - The **+** button for a new tab is hidden under the bar. ⌘T still works.
 - Tested on macOS 26 with the default Finder toolbar. Other versions and toolbar styles may need the tuning above.
 

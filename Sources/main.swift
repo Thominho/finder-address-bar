@@ -16,7 +16,6 @@ enum Prefs {
             "placement": Placement.top.rawValue,
             "toolbarHeight": 52.0,
             "titlebarHeight": 28.0,
-            "tabBarHeight": 28.0,
             "statusBarHeight": 28.0,
             "barHeight": 28.0,
             "pathBarHeight": 30.0,
@@ -60,7 +59,7 @@ struct FinderWindow {
     let statusBarVisible: Bool
     let collapsed: Bool
     let bounds: CGRect
-    var hasTabBar = false
+    var hasSeveralTabs = false
 }
 
 enum FinderError: Error {
@@ -182,6 +181,24 @@ final class FinderBridge: @unchecked Sendable {
 
     private static func quoted(_ text: String) -> String {
         text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+
+/// Finder's own setting for showing the tab bar in windows with a single tab. With it on, Finder keeps
+/// an empty row under the toolbar, which is exactly where the bar goes.
+enum FinderTabBar {
+    private static let key = "NSWindowTabbingShoudShowTabBarKey-com.apple.finder.TBrowserWindow" as CFString  // AppKit's spelling
+    private static let finder = "com.apple.finder" as CFString
+
+    static var isShown: Bool {
+        CFPreferencesAppSynchronize(finder)
+        return CFPreferencesCopyAppValue(key, finder) as? Bool ?? false
+    }
+
+    /// Takes effect for Finder windows opened from now on.
+    static func show() {
+        CFPreferencesSetAppValue(key, kCFBooleanTrue, finder)
+        CFPreferencesAppSynchronize(finder)
     }
 }
 
@@ -495,6 +512,11 @@ final class Controller: NSObject {
 
     func refresh() { kick() }
 
+    /// `defaults write local.finderpathbar debug -bool true` logs what the tracking does.
+    private func debug(_ message: @autoclosure () -> String) {
+        if UserDefaults.standard.bool(forKey: "debug") { NSLog("FinderPathBar: \(message())") }
+    }
+
     @objc private func activeApplicationChanged() {
         poll()
         kick()
@@ -550,11 +572,13 @@ final class Controller: NSObject {
         var updated: [Int: FinderWindow] = [:]
         for var window in list where !window.collapsed {
             // background tabs are separate windows with the same frame that are not on screen
-            window.hasTabBar = list.contains {
+            window.hasSeveralTabs = list.contains {
                 $0.id != window.id && !$0.collapsed && $0.bounds == window.bounds && !onScreen.contains($0.id)
             }
             updated[window.id] = window
+            if let old = windows[window.id], old.path != window.path { debug("path \(window.id): '\(old.path)' -> '\(window.path)'") }
         }
+        for id in windows.keys where updated[id] == nil { debug("window \(id) missing from poll") }
         windows = updated
         frontWindowID = list.first?.id
     }
@@ -563,8 +587,12 @@ final class Controller: NSObject {
         let id: Int
         let pid: pid_t
         let layer: Int
+        let alpha: Double
         let bounds: CGRect
     }
+
+    private static let raisedLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1)
+    private let ownPID = ProcessInfo.processInfo.processIdentifier
 
     /// On-screen windows, front to back.
     private func onScreenWindows() -> [ScreenWindow] {
@@ -574,10 +602,11 @@ final class Controller: NSObject {
             guard let id = info[kCGWindowNumber as String] as? Int,
                   let pid = info[kCGWindowOwnerPID as String] as? pid_t,
                   let layer = info[kCGWindowLayer as String] as? Int,
+                  let alpha = info[kCGWindowAlpha as String] as? Double,
                   let boundsInfo = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsInfo)
             else { return nil }
-            return ScreenWindow(id: id, pid: pid, layer: layer, bounds: bounds)
+            return ScreenWindow(id: id, pid: pid, layer: layer, alpha: alpha, bounds: bounds)
         }
     }
 
@@ -586,21 +615,38 @@ final class Controller: NSObject {
         if let finderPID, !windows.isEmpty {
             let entries = onScreenWindows()
             for (index, entry) in entries.enumerated() where entry.pid == finderPID && entry.layer == 0 {
-                guard let window = windows[entry.id], let frame = barFrame(for: window, bounds: entry.bounds) else { continue }
+                guard let window = windows[entry.id], let rect = barRect(for: window, bounds: entry.bounds) else { continue }
                 shown.insert(entry.id)
                 let bar = bar(for: entry.id)
                 bar.update(path: window.path)
                 bar.bottomRadii = bottomRadii(for: window)
+                let frame = appKitFrame(rect)
                 if bar.frame != frame {
                     bar.setFrame(frame, display: true)
                     lastMove = Date()
                 }
-                if !bar.isVisible || !isAttached(bar, toEntryAt: index, in: entries) {
-                    bar.order(.above, relativeTo: entry.id)
+
+                // A click raises the Finder window above everything on its level, the bar included, and what is
+                // under the bar would flash through. So while no other window covers the bar's spot, the bar
+                // floats one level higher; otherwise it sits right above its own window.
+                let covered = entries[..<index].contains {
+                    $0.layer == 0 && $0.pid != ownPID && $0.alpha > 0 && $0.bounds.intersects(rect)
+                }
+                let level = covered ? NSWindow.Level.normal : Self.raisedLevel
+                let levelChanged = bar.level != level
+                if levelChanged { bar.level = level }
+                if covered {
+                    if levelChanged || !bar.isVisible || !isAttached(bar, toEntryAt: index, in: entries) {
+                        debug("reorder bar of \(entry.id), visible=\(bar.isVisible)")
+                        bar.order(.above, relativeTo: entry.id)
+                    }
+                } else if !bar.isVisible {
+                    bar.orderFront(nil)
                 }
             }
         }
         for (id, bar) in bars where !shown.contains(id) {
+            if bar.isVisible { debug("hide bar of \(id), known=\(windows[id] != nil)") }
             bar.orderOut(nil)
             if windows[id] == nil { bars[id] = nil }
         }
@@ -619,33 +665,41 @@ final class Controller: NSObject {
         window.toolbarVisible && window.sidebarWidth > 0 ? window.sidebarWidth + Prefs.metric("sidebarGap") : 0
     }
 
+    /// With several tabs Finder's tab strip takes the row under the toolbar, so the bar moves to the bottom.
+    private func placement(for window: FinderWindow) -> Placement {
+        window.hasSeveralTabs ? .bottom : Prefs.placement
+    }
+
     /// At the bottom the bar reaches into the window's rounded corners unless the status bar is below it.
     private func bottomRadii(for window: FinderWindow) -> NSSize {
-        guard Prefs.placement == .bottom, !window.statusBarVisible else { return .zero }
+        guard placement(for: window) == .bottom, !window.statusBarVisible else { return .zero }
         let radius = Prefs.metric("windowCornerRadius")
         return NSSize(width: contentInset(for: window) == 0 ? radius : 0, height: radius)
     }
 
-    private func barFrame(for window: FinderWindow, bounds: CGRect) -> NSRect? {
-        let height = Prefs.metric(Prefs.placement == .top ? "barHeight" : "pathBarHeight")
+    /// Where the bar goes, in window server coordinates (origin at the top left of the main screen).
+    private func barRect(for window: FinderWindow, bounds: CGRect) -> CGRect? {
+        let placement = placement(for: window)
+        let height = Prefs.metric(placement == .top ? "barHeight" : "pathBarHeight")
         let left = contentInset(for: window)
         let width = bounds.width - left
         guard width >= 160, bounds.height >= 160 else { return nil }
 
         var top: CGFloat
-        switch Prefs.placement {
+        switch placement {
         case .top:
             top = bounds.minY + Prefs.metric(window.toolbarVisible ? "toolbarHeight" : "titlebarHeight")
-            if window.hasTabBar { top += Prefs.metric("tabBarHeight") }
         case .bottom:
             top = bounds.maxY - height
             if window.statusBarVisible { top -= Prefs.metric("statusBarHeight") }
         }
-        top += Prefs.offset
+        return CGRect(x: bounds.minX + left, y: top + Prefs.offset, width: width, height: height)
+    }
 
-        // the window server counts from the top, AppKit from the bottom of the main screen
+    /// AppKit counts from the bottom of the main screen.
+    private func appKitFrame(_ rect: CGRect) -> NSRect {
         let screenHeight = NSScreen.screens.first?.frame.height ?? 0
-        return NSRect(x: bounds.minX + left, y: screenHeight - top - height, width: width, height: height)
+        return NSRect(x: rect.minX, y: screenHeight - rect.maxY, width: rect.width, height: rect.height)
     }
 
     private func bar(for id: Int) -> BarPanel {
@@ -693,13 +747,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // a second copy (say, one in Applications and one in Downloads) would draw every bar twice
+        let copies = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+        if copies.contains(where: { $0 != .current }) {
+            NSApp.terminate(nil)
+            return
+        }
         Prefs.registerDefaults()
+        offerRowSetupIfNeeded()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "folder", accessibilityDescription: L10n.text("Finder Address Bar", "Adresní řádek Finderu"))
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
         controller.start()
+    }
+
+    /// Asked once, on first launch, before macOS shows its own prompt about controlling Finder.
+    private func offerRowSetupIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "didOfferRowSetup") else { return }
+        defaults.set(true, forKey: "didOfferRowSetup")
+        guard !FinderTabBar.isShown else { return }
+
+        let question = NSAlert()
+        question.messageText = L10n.text("Reserve a row for the address bar?", "Vyhradit adresnímu řádku vlastní řádek?")
+        question.informativeText = L10n.text(
+            "Finder can keep an empty row under its toolbar (its tab bar). The address bar then sits on that row and covers nothing. Without it, the bar lies over the column headers or the first item.",
+            "Finder umí pod panelem nástrojů držet prázdný řádek (řádek panelů). Adresní řádek pak leží na něm a nic nezakrývá. Bez něj překrývá záhlaví sloupců nebo první položku.")
+        question.addButton(withTitle: L10n.text("Reserve Row", "Vyhradit řádek"))
+        question.addButton(withTitle: L10n.text("Not Now", "Teď ne"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard question.runModal() == .alertFirstButtonReturn else { return }
+        FinderTabBar.show()
+
+        let done = NSAlert()
+        done.messageText = L10n.text("New Finder windows now have the row", "Nová okna Finderu už řádek mají")
+        done.informativeText = L10n.text(
+            "In windows that are already open, choose View → Show Tab Bar.",
+            "V oknech, která už jsou otevřená, zvolte Zobrazení → Zobrazit řádek panelů.")
+        done.runModal()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
