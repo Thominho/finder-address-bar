@@ -18,9 +18,11 @@ Finder ukáže, kde jste, ale nedovolí jednoduše napsat, kam chcete. Vestavěn
 - Kliknutí označí celou cestu, napíšete nebo vložíte novou a **Enter** na ni přejde.
 - **Tab** doplňuje názvy složek, **Esc** úpravu zruší.
 - Rozumí `~`, relativním cestám (`..`, `podslozka`), adresám `file://`, cestám v uvozovkách i cestám zapsaným pro shell (`Moje\ složka`).
-- Cesta k souboru otevře jeho složku a soubor označí.
+- Cesta k souboru ho otevře ve výchozí aplikaci, cesta k aplikaci ji spustí.
+- Webové adresy se otevřou v prohlížeči: cokoli, co začíná `https://` nebo `http://`, a také `www.…` nebo běžná doména jako `seznam.cz`, pokud neexistuje soubor toho jména. Jiné adresy (`smb://`, `mailto:` …) se otevřou v aplikaci, která je obsluhuje.
 - Každé okno má vlastní řádek, který se s oknem přesouvá a mění velikost.
-- Ikona v řádku nabídek nabízí umístění (pod panelem nástrojů, nebo dole místo řádku cesty Finderu), jemný posun, spouštění po přihlášení a ukončení.
+- Ikona v řádku nabídek nabízí umístění (pod panelem nástrojů, nebo dole místo řádku cesty Finderu), jemný posun, spouštění po přihlášení, aktualizace a ukončení.
+- Sama se aktualizuje z vydání tohoto projektu, viz [Aktualizace](#aktualizace).
 - Rozhraní je česky a anglicky.
 - Žádná injektáž kódu, ochrana SIP zůstává zapnutá a není potřeba oprávnění Zpřístupnění ani Nahrávání obrazovky. Jediné oprávnění je *Automatizace → Finder*.
 
@@ -38,7 +40,7 @@ Otevřete **Terminál** (stiskněte ⌘Mezerník, napište `Terminál`, stiskně
 curl -fsSL https://raw.githubusercontent.com/Thominho/finder-address-bar/main/install.sh | bash
 ```
 
-Příkaz aplikaci stáhne, uloží do složky Aplikace a spustí. Nic se nesestavuje a Xcode není potřeba.
+Příkaz aplikaci stáhne, uloží do složky Aplikace a spustí. Nic se nesestavuje a Xcode není potřeba. Od verze 1.2 se aplikace aktualizuje sama, takže to stačí udělat jednou.
 
 ### Stažení
 
@@ -75,8 +77,17 @@ Finder nejde rozšířit o skutečný řádek v panelu nástrojů, takže jde o 
 
 1. Přes AppleScript se Finderu ptá, která okna jsou otevřená a jakou složku zobrazují.
 2. Polohu oken čte z window serveru.
-3. Přes každé okno Finderu položí panel bez rámečku, zařazený hned nad něj, takže vypadá jako součást okna.
-4. Po stisku Enteru řekne Finderu, aby dané okno přepnul na novou složku.
+3. Přes každé okno Finderu položí panel bez rámečku a drží ho nad tím oknem, takže vypadá jako součást okna.
+4. Po stisku Enteru řekne Finderu, aby dané okno přepnul na novou složku. Soubory a webové adresy předá aplikaci, která je otevře.
+
+## Aktualizace
+
+Při spuštění a pak každých šest hodin se aplikace podívá na nejnovější vydání tohoto repozitáře. Když najde novější verzi, stáhne ji, ověří, že jde o stejnou aplikaci v ohlášené verzi s neporušeným podpisem, nahradí se a znovu spustí. Pokud zrovna píšete do řádku, počká.
+
+- Volba **Automaticky aktualizovat** v nabídce u ikony v řádku nabídek to vypne.
+- **Zkontrolovat aktualizace…** zkontroluje hned a řekne výsledek.
+- Verze 1.0 a 1.1 se samy aktualizovat neumí. Spusťte instalační příkaz ještě jednou a dostanete 1.2; od ní už aktualizace probíhají samy.
+- Aplikace se umí nahradit jen tam, kam smí zapisovat, což ve složce Aplikace normálně platí.
 
 ## Doladění
 
@@ -114,7 +125,7 @@ Když se něco chová divně, příkaz `defaults write local.finderpathbar debug
 
 ## Odinstalace
 
-Ukončete aplikaci přes ikonu v řádku nabídek a smažte ji. Pokud nechcete prázdný řádek, zvolte ve Finderu **Zobrazení → Skrýt řádek panelů**. Nastavení odstraníte takto:
+V nabídce u ikony v řádku nabídek vypněte **Spouštět po přihlášení**, aplikaci ukončete a smažte. Pokud nechcete prázdný řádek, zvolte ve Finderu **Zobrazení → Skrýt řádek panelů**. Nastavení odstraníte takto:
 
 ```bash
 defaults delete local.finderpathbar

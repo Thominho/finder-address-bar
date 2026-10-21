@@ -18,9 +18,11 @@ Finder shows you where you are, but it does not let you simply type where you wa
 - Click the bar to select the whole path, type or paste a new one, press **Enter** to go.
 - **Tab** completes folder names, **Esc** cancels.
 - Understands `~`, relative paths (`..`, `subfolder`), `file://` URLs, quoted paths and paths escaped for the shell (`My\ Folder`).
-- A path to a file opens its folder and selects the file.
+- A path to a file opens it in its default app, a path to an app starts it.
+- Web addresses open in your browser: anything starting with `https://` or `http://`, and also `www.…` or a common domain such as `seznam.cz` when no file of that name exists. Other addresses (`smb://`, `mailto:` …) open in the app that handles them.
 - One bar per window. It follows the window when you move or resize it.
-- Menu bar icon with placement (below the toolbar, or at the bottom over Finder's path bar), fine position adjustment, launch at login and quit.
+- Menu bar icon with placement (below the toolbar, or at the bottom over Finder's path bar), fine position adjustment, launch at login, updates and quit.
+- Updates itself from this project's releases, see [Updates](#updates).
 - English and Czech interface.
 - No code injection, System Integrity Protection stays on, and no Accessibility or Screen Recording permission is needed. The only permission is *Automation → Finder*.
 
@@ -38,7 +40,7 @@ Open **Terminal** (press ⌘Space, type `Terminal`, press Enter), paste this lin
 curl -fsSL https://raw.githubusercontent.com/Thominho/finder-address-bar/main/install.sh | bash
 ```
 
-It downloads the app, puts it into your Applications folder and starts it. Nothing has to be built and Xcode is not needed.
+It downloads the app, puts it into your Applications folder and starts it. Nothing has to be built and Xcode is not needed. From version 1.2 on the app keeps itself up to date, so this is needed only once.
 
 ### Download
 
@@ -75,8 +77,17 @@ Finder cannot be extended with a real toolbar row, so this is a small background
 
 1. It asks Finder over AppleScript which windows are open and which folder each one shows.
 2. It reads the window positions from the window server.
-3. It places a borderless panel over each Finder window, ordered directly above it, so the panel looks like part of the window.
-4. When you press Enter it tells Finder to point that window at the new folder.
+3. It places a borderless panel over each Finder window and keeps it above that window, so the panel looks like part of the window.
+4. When you press Enter it tells Finder to point that window at the new folder. Files and web addresses go to the app that opens them.
+
+## Updates
+
+When it starts and then every six hours, the app looks at the latest release of this repository. If there is a newer version it downloads it, checks that it is the same app in the announced version with an intact signature, replaces itself and restarts. If you are typing in the bar at that moment, it waits.
+
+- **Update Automatically** in the menu bar icon turns this off.
+- **Check for Updates…** checks right away and tells you the result.
+- Versions 1.0 and 1.1 cannot update themselves yet. Run the install command once more to get 1.2; from then on updates are automatic.
+- The app can only replace itself where it is allowed to write, which is normally the case in Applications.
 
 ## Tuning
 
@@ -114,7 +125,7 @@ If something misbehaves, `defaults write local.finderpathbar debug -bool true` m
 
 ## Uninstall
 
-Quit from the menu bar icon and delete the app. In Finder choose **View → Hide Tab Bar** if you do not want the empty row. To remove the settings:
+Turn off **Launch at Login** in the menu bar icon, quit, and delete the app. In Finder choose **View → Hide Tab Bar** if you do not want the empty row. To remove the settings:
 
 ```bash
 defaults delete local.finderpathbar

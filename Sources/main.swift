@@ -22,6 +22,7 @@ enum Prefs {
             "windowCornerRadius": 26.0,
             "sidebarGap": 8.0,
             "offset": 0.0,
+            "autoUpdate": true,
         ])
     }
 
@@ -33,6 +34,11 @@ enum Prefs {
     static var offset: CGFloat {
         get { CGFloat(defaults.double(forKey: "offset")) }
         set { defaults.set(Double(newValue), forKey: "offset") }
+    }
+
+    static var autoUpdate: Bool {
+        get { defaults.bool(forKey: "autoUpdate") }
+        set { defaults.set(newValue, forKey: "autoUpdate") }
     }
 
     static func metric(_ key: String) -> CGFloat { CGFloat(defaults.double(forKey: key)) }
@@ -108,26 +114,12 @@ final class FinderBridge: @unchecked Sendable {
         }
     }
 
-    /// Points the window at a folder; for a file, at its parent folder with the file selected.
-    func show(path: String, isFolder: Bool, inWindow id: Int, _ completion: @escaping @MainActor (Bool) -> Void) {
-        let source: String
-        if isFolder {
-            source = """
-                set f to (POSIX file "\(Self.quoted(path))") as alias
-                tell application "Finder" to set target of Finder window id \(id) to f
-                """
-        } else {
-            let parent = (path as NSString).deletingLastPathComponent
-            source = """
-                set f to (POSIX file "\(Self.quoted(path))") as alias
-                set d to (POSIX file "\(Self.quoted(parent))") as alias
-                tell application "Finder"
-                	set target of Finder window id \(id) to d
-                	reveal f
-                end tell
-                """
-        }
-        execute(source, completion)
+    /// Points the window at a folder.
+    func show(folder path: String, inWindow id: Int, _ completion: @escaping @MainActor (Bool) -> Void) {
+        execute("""
+            set f to (POSIX file "\(Self.quoted(path))") as alias
+            tell application "Finder" to set target of Finder window id \(id) to f
+            """, completion)
     }
 
     func raise(windowID id: Int, _ completion: @escaping @MainActor (Bool) -> Void) {
@@ -245,6 +237,42 @@ enum PathResolver {
         if folders.count == 1 { return (directory as NSString).appendingPathComponent(first) + "/" }
         let common = folders.dropFirst().reduce(first) { $0.commonPrefix(with: $1, options: .caseInsensitive) }
         return common.count > prefix.count ? (directory as NSString).appendingPathComponent(common) : nil
+    }
+}
+
+// MARK: - Web addresses
+
+/// Addresses that are not paths, opened in the browser (or whatever app handles them) like in Windows Explorer.
+enum WebAddress {
+    /// Bare domains count only with these endings, so a mistyped `notes.txt` is not sent to the web.
+    private static let commonDomains = ["com", "org", "net", "eu", "cz", "sk", "de", "at", "io", "info"]
+
+    /// `https://…`, `smb://…`, `mailto:…` and the like. These always win over paths.
+    static func explicitURL(from raw: String) -> URL? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let schemeEnd = text.range(of: "://") ?? (text.lowercased().hasPrefix("mailto:") ? text.range(of: ":") : nil)
+        guard let schemeEnd else { return nil }
+        let scheme = text[..<schemeEnd.lowerBound]
+        guard scheme.range(of: "^[A-Za-z][A-Za-z0-9+.-]*$", options: .regularExpression) != nil,
+              scheme.lowercased() != "file"
+        else { return nil }
+        return makeURL(text)
+    }
+
+    /// `www.…` or a bare domain such as `seznam.cz`; used only when no such file or folder exists.
+    static func looseURL(from raw: String) -> URL? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let domains = commonDomains.joined(separator: "|")
+        let isWeb = text.lowercased().hasPrefix("www.") && !text.contains(" ")
+            || text.range(of: "^([a-z0-9-]+\\.)+(\(domains))(:[0-9]+)?(/\\S*)?$", options: [.regularExpression, .caseInsensitive]) != nil
+        return isWeb ? makeURL("https://" + text) : nil
+    }
+
+    private static func makeURL(_ text: String) -> URL? {
+        if let url = URL(string: text), url.scheme != nil { return url }
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.insert("#")
+        return text.addingPercentEncoding(withAllowedCharacters: allowed).flatMap(URL.init(string:))
     }
 }
 
@@ -722,20 +750,175 @@ final class Controller: NSObject {
     }
 
     private func submit(_ text: String, from bar: BarPanel) {
+        if let url = WebAddress.explicitURL(from: text) {
+            open(url, from: bar)
+            return
+        }
         guard let path = PathResolver.existingPath(from: text, relativeTo: bar.path) else {
-            bar.rejectInput()
+            if let url = WebAddress.looseURL(from: text) { open(url, from: bar) } else { bar.rejectInput() }
             return
         }
         var isDirectory: ObjCBool = false
         FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-        let isFolder = isDirectory.boolValue && !NSWorkspace.shared.isFilePackage(atPath: path)
+        // files, apps and document packages open in their app, like in Windows Explorer
+        guard isDirectory.boolValue, !NSWorkspace.shared.isFilePackage(atPath: path) else {
+            open(URL(fileURLWithPath: path), from: bar)
+            return
+        }
 
         bar.endEditing(revert: false)
-        bar.update(path: isFolder ? path : (path as NSString).deletingLastPathComponent)
-        bridge.show(path: path, isFolder: isFolder, inWindow: bar.finderWindowID) { [weak self] ok in
+        bar.update(path: path)
+        bridge.show(folder: path, inWindow: bar.finderWindowID) { [weak self] ok in
             if !ok { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
             self?.poll()
         }
+    }
+
+    private func open(_ url: URL, from bar: BarPanel) {
+        bar.endEditing(revert: true)
+        if !NSWorkspace.shared.open(url) { NSSound.beep() }
+    }
+
+    var isEditing: Bool { bars.values.contains { $0.isEditing } }
+}
+
+// MARK: - Updates
+
+enum UpdateError: Error {
+    case noRelease, download, invalid, notWritable
+    case tool(String)
+}
+
+/// Keeps the app current from this project's GitHub releases: download, check, swap the bundle, relaunch.
+@MainActor
+final class Updater {
+    private static let latestRelease = URL(string: "https://github.com/Thominho/finder-address-bar/releases/latest")!
+    private static let downloadFormat = "https://github.com/Thominho/finder-address-bar/releases/download/%@/FinderPathBar.zip"
+
+    static var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    /// False while the user is typing in a bar; the relaunch then waits.
+    var canRestart: () -> Bool = { true }
+    private var busy = false
+    private var timer: Timer?
+
+    func start() {
+        after(10) { [weak self] in self?.checkAutomatically() }
+        timer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkAutomatically() }
+        }
+    }
+
+    private func checkAutomatically() {
+        if Prefs.autoUpdate { check(manually: false) }
+    }
+
+    /// A manual check reports its result; an automatic one stays quiet.
+    func check(manually: Bool) {
+        guard !busy else { return }
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                let tag = try await Self.latestTag()
+                guard Self.isNewer(tag, than: Self.currentVersion) else {
+                    if manually {
+                        inform(L10n.text("You have the latest version (\(Self.currentVersion)).", "Máte nejnovější verzi (\(Self.currentVersion))."))
+                    }
+                    return
+                }
+                let app = try await Self.download(tag: tag)
+                try Self.replaceRunningApp(with: app)
+                NSLog("FinderPathBar: updated to \(tag)")
+                if manually {
+                    inform(L10n.text("Updated to \(tag). The app will restart.", "Aktualizováno na \(tag). Aplikace se znovu spustí."))
+                }
+                restartWhenIdle()
+            } catch {
+                NSLog("FinderPathBar: update failed: \(error)")
+                if manually {
+                    inform(L10n.text("Could not update (\(error)).", "Aktualizace se nepovedla (\(error))."))
+                }
+            }
+        }
+    }
+
+    /// `releases/latest` redirects to `releases/tag/<tag>`.
+    private static func latestTag() async throws -> String {
+        var request = URLRequest(url: latestRelease)
+        request.httpMethod = "HEAD"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let url = response.url, url.path.contains("/releases/tag/") else { throw UpdateError.noRelease }
+        return url.lastPathComponent
+    }
+
+    static func isNewer(_ candidate: String, than version: String) -> Bool {
+        func numbers(_ text: String) -> [Int] {
+            text.trimmingCharacters(in: CharacterSet(charactersIn: "vV")).split(separator: ".").map { Int($0) ?? 0 }
+        }
+        let a = numbers(candidate), b = numbers(version)
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+
+    private static func download(tag: String) async throws -> URL {
+        guard let url = URL(string: String(format: downloadFormat, tag)) else { throw UpdateError.download }
+        let (zip, response) = try await URLSession.shared.download(from: url)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError.download }
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FinderPathBar-update-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try run("/usr/bin/ditto", ["-x", "-k", zip.path, folder.path])
+        try? FileManager.default.removeItem(at: zip)
+
+        // it has to be this app, in the announced version, with an intact signature
+        let app = folder.appendingPathComponent("FinderPathBar.app")
+        guard let bundle = Bundle(url: app), bundle.bundleIdentifier == Bundle.main.bundleIdentifier,
+              let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !isNewer(tag, than: version), !isNewer(version, than: tag)
+        else { throw UpdateError.invalid }
+        try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+        return app
+    }
+
+    private static func replaceRunningApp(with app: URL) throws {
+        let current = Bundle.main.bundleURL
+        guard FileManager.default.isWritableFile(atPath: current.deletingLastPathComponent().path) else { throw UpdateError.notWritable }
+        _ = try FileManager.default.replaceItemAt(current, withItemAt: app)
+    }
+
+    private static func run(_ tool: String, _ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw UpdateError.tool(tool) }
+    }
+
+    private func restartWhenIdle() {
+        guard canRestart() else {
+            after(5) { [weak self] in self?.restartWhenIdle() }
+            return
+        }
+        // a small shell outlives this process and opens the new copy once this one is gone
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundleURL.path]
+        try? relaunch.run()
+        NSApp.terminate(nil)
+    }
+
+    private func inform(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = message
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }
 
@@ -744,6 +927,7 @@ final class Controller: NSObject {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let controller = Controller()
+    private let updater = Updater()
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -761,6 +945,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         controller.start()
+        updater.canRestart = { [weak self] in !(self?.controller.isEditing ?? false) }
+        updater.start()
     }
 
     /// Asked once, on first launch, before macOS shows its own prompt about controlling Finder.
@@ -831,6 +1017,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         add(L10n.text("Launch at Login", "Spouštět po přihlášení"), #selector(toggleLoginItem), to: menu).state = SMAppService.mainApp.status == .enabled ? .on : .off
+        add(L10n.text("Update Automatically", "Automaticky aktualizovat"), #selector(toggleAutoUpdate), to: menu).state = Prefs.autoUpdate ? .on : .off
+        add(L10n.text("Check for Updates…", "Zkontrolovat aktualizace…") + " (\(Updater.currentVersion))", #selector(checkForUpdates), to: menu)
         menu.addItem(.separator())
         add(L10n.text("Quit", "Ukončit"), #selector(quit), to: menu)
     }
@@ -860,6 +1048,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSSound.beep()
         }
     }
+
+    @objc private func toggleAutoUpdate() { Prefs.autoUpdate.toggle() }
+    @objc private func checkForUpdates() { updater.check(manually: true) }
 
     @objc private func openAutomationSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
