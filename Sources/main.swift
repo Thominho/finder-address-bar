@@ -60,7 +60,7 @@ func after(_ delay: TimeInterval, _ body: @escaping @MainActor () -> Void) {
 
 struct FinderWindow {
     let id: Int  // same as the window number in the window server
-    let path: String  // empty for windows without a folder (Recents, AirDrop…)
+    var path: String  // empty for windows without a folder (Recents, AirDrop…)
     let sidebarWidth: CGFloat
     let toolbarVisible: Bool
     let statusBarVisible: Bool
@@ -77,32 +77,37 @@ enum FinderError: Error {
 final class FinderBridge: @unchecked Sendable {
     private let queue = DispatchQueue(label: "FinderBridge", qos: .userInitiated)
     private var listScript: NSAppleScript?
+    private var frontScript: NSAppleScript?
 
+    // One Apple Event per property for all windows at once: about 50 ms instead of over half a second
+    // when every window is asked separately.
     private static let listSource = """
         tell application "Finder"
-        	set out to ""
-        	repeat with w in (get Finder windows)
-        		try
-        			set p to ""
-        			try
-        				set p to POSIX path of ((target of w) as alias)
-        			end try
-        			set sw to 0
-        			set tv to 1
-        			set sb to 0
-        			set isMin to 0
-        			if toolbar visible of w then
-        				set sw to sidebar width of w
-        			else
-        				set tv to 0
-        			end if
-        			if statusbar visible of w then set sb to 1
-        			if collapsed of w then set isMin to 1
-        			set b to bounds of w
-        			set out to out & (id of w) & tab & sw & tab & tv & tab & sb & tab & isMin & tab & (item 1 of b) & tab & (item 2 of b) & tab & (item 3 of b) & tab & (item 4 of b) & tab & p & linefeed
-        		end try
-        	end repeat
-        	return out
+        	set ids to id of every Finder window
+        	if ids is {} then return ""
+        	set urls to URL of target of every Finder window
+        	set bs to bounds of every Finder window
+        	set cs to collapsed of every Finder window
+        	set tvs to toolbar visible of every Finder window
+        	set sbs to statusbar visible of every Finder window
+        	set sws to sidebar width of every Finder window
+        end tell
+        set n to count of ids
+        if (count of urls) is not n or (count of bs) is not n or (count of sws) is not n then error "windows changed"
+        set out to ""
+        repeat with i from 1 to n
+        	set b to item i of bs
+        	set out to out & (item i of ids) & tab & (item i of sws) & tab & (item i of tvs) & tab & (item i of sbs) & tab & (item i of cs) & tab & (item 1 of b) & tab & (item 2 of b) & tab & (item 3 of b) & tab & (item 4 of b) & tab & (item i of urls) & linefeed
+        end repeat
+        return out
+        """
+
+    /// Just the front window: about 20 ms, so it can run right after every key press or click.
+    private static let frontSource = """
+        tell application "Finder"
+        	if (count of Finder windows) is 0 then return ""
+        	set w to Finder window 1
+        	return (id of w as text) & tab & (URL of target of w)
         end tell
         """
 
@@ -113,6 +118,23 @@ final class FinderBridge: @unchecked Sendable {
             let result = Self.run(self.listScript).map(Self.parse)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(result) } }
         }
+    }
+
+    /// The front window and the folder it shows.
+    func frontWindow(_ completion: @escaping @MainActor (Result<(id: Int, path: String)?, FinderError>) -> Void) {
+        queue.async {
+            if self.frontScript == nil { self.frontScript = NSAppleScript(source: Self.frontSource) }
+            let result = Self.run(self.frontScript).map { output -> (id: Int, path: String)? in
+                let fields = output.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                guard let id = fields.first.flatMap({ Int($0) }) else { return nil }
+                return (id, Self.path(fromURL: fields.count > 1 ? fields[1] : ""))
+            }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(result) } }
+        }
+    }
+
+    private static func path(fromURL text: String) -> String {
+        URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines))?.path ?? ""
     }
 
     /// Points the window at a folder.
@@ -163,11 +185,10 @@ final class FinderBridge: @unchecked Sendable {
             guard f.count == 10, let id = Int(f[0]),
                   let left = Double(f[5]), let top = Double(f[6]), let right = Double(f[7]), let bottom = Double(f[8])
             else { return nil }
-            var path = f[9]
-            if path.count > 1, path.hasSuffix("/") { path.removeLast() }
+            let toolbarVisible = f[2] == "true"
             return FinderWindow(
-                id: id, path: path, sidebarWidth: CGFloat(Double(f[1]) ?? 0),
-                toolbarVisible: f[2] == "1", statusBarVisible: f[3] == "1", collapsed: f[4] == "1",
+                id: id, path: path(fromURL: f[9]), sidebarWidth: toolbarVisible ? CGFloat(Double(f[1]) ?? 0) : 0,
+                toolbarVisible: toolbarVisible, statusBarVisible: f[3] == "true", collapsed: f[4] == "true",
                 bounds: CGRect(x: left, y: top, width: right - left, height: bottom - top))
         }
     }
@@ -952,6 +973,9 @@ final class Controller: NSObject {
     private var finderPID: pid_t?
     private var polling = false
     private var lastPoll = Date.distantPast
+    private var frontQueryRunning = false
+    private var frontQueryPending = false
+    private var lastInputCheck = Date()
     private var lastMove = Date.distantPast
     private var tickGeneration = 0
 
@@ -964,9 +988,15 @@ final class Controller: NSObject {
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
             // a click changes window order, a mouse-up often changes the folder shown
             self?.kick()
-            if event.type == .leftMouseUp { after(0.1) { self?.poll() } }
         }
         shortcuts.onPress = { [weak self] in self?.focusFrontBar() }
+        // a cheap check of its own, 30 times a second, so a new folder shows up right after the key press or click
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.finderIsFrontmost, self.userJustActed() else { return }
+                self.refreshFrontSoon()
+            }
+        }
         tick()
         shortcuts.isEnabled = finderIsFrontmost
     }
@@ -1005,7 +1035,7 @@ final class Controller: NSObject {
 
     private func tick() {
         let front = finderIsFrontmost
-        if Date().timeIntervalSince(lastPoll) >= (front ? 0.35 : 1.5) { poll() }
+        if Date().timeIntervalSince(lastPoll) >= (front ? 1.5 : 3) { poll() }
         layout()
         let busy = (front && NSEvent.pressedMouseButtons != 0) || Date().timeIntervalSince(lastMove) < 0.6
         tickGeneration += 1
@@ -1013,6 +1043,46 @@ final class Controller: NSObject {
         after(busy ? 1.0 / 60 : (front ? 1.0 / 15 : 0.25)) { [weak self] in
             guard let self, self.tickGeneration == generation else { return }
             self.tick()
+        }
+    }
+
+    /// A key press, click or scroll since the last check. Only the time of the last input is read,
+    /// which needs no permission; nothing about what was typed.
+    private func userJustActed() -> Bool {
+        let types: [CGEventType] = [.keyDown, .leftMouseUp, .rightMouseUp, .otherMouseUp, .scrollWheel]
+        let idle = types.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
+        let sinceCheck = Date().timeIntervalSince(lastInputCheck)
+        lastInputCheck = Date()
+        return idle <= sinceCheck + 0.01
+    }
+
+    /// Navigation (⌘[, double-click, sidebar…) shows up in the front window; ask right away and twice more,
+    /// in case the folder takes a moment to open.
+    private func refreshFrontSoon() {
+        refreshFront()
+        after(0.15) { [weak self] in self?.refreshFront() }
+        after(0.5) { [weak self] in self?.refreshFront() }
+    }
+
+    private func refreshFront() {
+        guard !frontQueryRunning else {
+            frontQueryPending = true
+            return
+        }
+        frontQueryRunning = true
+        bridge.frontWindow { [weak self] result in
+            guard let self else { return }
+            self.frontQueryRunning = false
+            if case .success(let front?) = result, var window = self.windows[front.id], window.path != front.path {
+                self.debug("front \(front.id): '\(window.path)' -> '\(front.path)'")
+                window.path = front.path
+                self.windows[front.id] = window
+                self.bars[front.id]?.update(path: front.path)
+            }
+            if self.frontQueryPending {
+                self.frontQueryPending = false
+                self.refreshFront()
+            }
         }
     }
 

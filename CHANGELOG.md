@@ -9,6 +9,7 @@ English first, then Czech. / Nejdřív anglicky, pak česky.
 - **Suggestions while typing:** recent paths and matching folders in a list under the bar; ↓ and ↑ move through it.
 - **Windows network paths** such as `\\server\share` open as `smb://server/share`.
 - Folder names appear in the system language, as in Finder.
+- **The path updates right away** after going back, forward or into a folder, instead of up to a second later. Finder is also asked far less often, which takes load off it.
 
 Česky:
 
@@ -17,6 +18,7 @@ English first, then Czech. / Nejdřív anglicky, pak česky.
 - **Návrhy při psaní:** naposledy zadané cesty a odpovídající složky v seznamu pod řádkem; ↓ a ↑ jím procházejí.
 - **Síťové cesty z Windows** jako `\\server\sdileni` se otevřou jako `smb://server/sdileni`.
 - Názvy složek jsou v jazyce systému, stejně jako ve Finderu.
+- **Cesta se aktualizuje hned** po přechodu zpět, vpřed nebo do složky, ne až za vteřinu. Finder se navíc ptá mnohem méně často, takže ho aplikace tolik nezatěžuje.
 
 ## v1.2.0
 
