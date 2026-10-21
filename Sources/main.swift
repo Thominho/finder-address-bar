@@ -974,6 +974,11 @@ final class Controller: NSObject {
     private var polling = false
     private var lastPoll = Date.distantPast
     private var frontQueryRunning = false
+    /// Finder answers in the order it was asked. Every request gets a number, and a window remembers the number
+    /// of the last navigation the bar started, so an answer asked for before that navigation cannot bring back
+    /// the old folder for a moment.
+    private var requestNumber = 0
+    private var navigationNumber: [Int: Int] = [:]
     private var frontQueryPending = false
     private var lastInputCheck = Date()
     private var lastMove = Date.distantPast
@@ -1070,10 +1075,12 @@ final class Controller: NSObject {
             return
         }
         frontQueryRunning = true
+        let asked = nextRequestNumber()
         bridge.frontWindow { [weak self] result in
             guard let self else { return }
             self.frontQueryRunning = false
-            if case .success(let front?) = result, var window = self.windows[front.id], window.path != front.path {
+            if case .success(let front?) = result, var window = self.windows[front.id], window.path != front.path,
+               self.navigationNumber[front.id, default: 0] < asked {
                 self.debug("front \(front.id): '\(window.path)' -> '\(front.path)'")
                 window.path = front.path
                 self.windows[front.id] = window
@@ -1091,13 +1098,14 @@ final class Controller: NSObject {
         polling = true
         lastPoll = Date()
         finderPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.processIdentifier
+        let asked = nextRequestNumber()
         bridge.listWindows { [weak self] result in
             guard let self else { return }
             self.polling = false
             switch result {
             case .success(let list):
                 self.notAuthorized = false
-                self.apply(list)
+                self.apply(list, asked: asked)
             case .failure(.notAuthorized):
                 if !self.notAuthorized { NSLog("FinderPathBar: not allowed to control Finder") }
                 self.notAuthorized = true
@@ -1109,10 +1117,19 @@ final class Controller: NSObject {
         }
     }
 
-    private func apply(_ list: [FinderWindow]) {
+    private func nextRequestNumber() -> Int {
+        requestNumber += 1
+        return requestNumber
+    }
+
+    private func apply(_ list: [FinderWindow], asked: Int) {
         let onScreen = Set(onScreenWindows().map(\.id))
         var updated: [Int: FinderWindow] = [:]
         for var window in list where !window.collapsed {
+            // asked before the bar's own navigation reached Finder: keep the folder the bar went to
+            if navigationNumber[window.id, default: 0] > asked, let known = windows[window.id] {
+                window.path = known.path
+            }
             // background tabs are separate windows with the same frame that are not on screen
             window.hasSeveralTabs = list.contains {
                 $0.id != window.id && !$0.collapsed && $0.bounds == window.bounds && !onScreen.contains($0.id)
@@ -1122,6 +1139,7 @@ final class Controller: NSObject {
         }
         for id in windows.keys where updated[id] == nil { debug("window \(id) missing from poll") }
         windows = updated
+        navigationNumber = navigationNumber.filter { updated[$0.key] != nil }
         frontWindowID = list.first?.id
     }
 
@@ -1287,6 +1305,9 @@ final class Controller: NSObject {
     private func show(folder path: String, in bar: BarPanel) {
         bar.endEditing(revert: false)
         bar.update(path: path)
+        // the bar redraws from this every frame, so it has to know the new folder too
+        windows[bar.finderWindowID]?.path = path
+        navigationNumber[bar.finderWindowID] = nextRequestNumber()
         bridge.show(folder: path, inWindow: bar.finderWindowID) { [weak self] ok in
             if !ok { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
             self?.poll()
