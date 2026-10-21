@@ -14,17 +14,30 @@ Finder ukáže, kde jste, ale nedovolí jednoduše napsat, kam chcete. Vestavěn
 
 ## Co umí
 
-- Celá cesta každého okna Finderu je pořád vidět a mění se podle toho, kam přejdete.
-- Kliknutí označí celou cestu, napíšete nebo vložíte novou a **Enter** na ni přejde.
-- **Tab** doplňuje názvy složek, **Esc** úpravu zruší.
+- Cesta každého okna Finderu je pořád vidět, jako názvy složek, na které jde kliknout a přejít do nich.
+- **⌘L** nebo **⌃L** (nebo kliknutí do prázdného místa v řádku) umožní cestu napsat nebo vložit; **Enter** na ni přejde.
+- Při psaní se pod řádkem nabízejí naposledy zadané cesty a odpovídající složky. **Tab** doplňuje názvy složek, **Esc** úpravu zruší.
 - Rozumí `~`, relativním cestám (`..`, `podslozka`), adresám `file://`, cestám v uvozovkách i cestám zapsaným pro shell (`Moje\ složka`).
 - Cesta k souboru ho otevře ve výchozí aplikaci, cesta k aplikaci ji spustí.
+- Síťové cesty z Windows (`\\server\sdileni`) se otevřou jako `smb://server/sdileni`.
 - Webové adresy se otevřou v prohlížeči: cokoli, co začíná `https://` nebo `http://`, a také `www.…` nebo běžná doména jako `seznam.cz`, pokud neexistuje soubor toho jména. Jiné adresy (`smb://`, `mailto:` …) se otevřou v aplikaci, která je obsluhuje.
 - Každé okno má vlastní řádek, který se s oknem přesouvá a mění velikost.
 - Ikona v řádku nabídek nabízí umístění (pod panelem nástrojů, nebo dole místo řádku cesty Finderu), jemný posun, spouštění po přihlášení, aktualizace a ukončení.
 - Sama se aktualizuje z vydání tohoto projektu, viz [Aktualizace](#aktualizace).
 - Rozhraní je česky a anglicky.
 - Žádná injektáž kódu, ochrana SIP zůstává zapnutá a není potřeba oprávnění Zpřístupnění ani Nahrávání obrazovky. Jediné oprávnění je *Automatizace → Finder*.
+
+## Ovládání
+
+| Co udělat | K čemu |
+| --- | --- |
+| **⌘L** nebo **⌃L** | psát do řádku předního okna Finderu (funguje, když je aktivní Finder) |
+| Kliknout na název složky | přejít do té složky |
+| Kliknout do prázdného místa v řádku | napsat cestu; celá cesta se označí |
+| **Enter** | přejít do složky, otevřít soubor nebo webovou adresu |
+| **Tab** | doplnit název složky |
+| **↓** **↑** | procházet návrhy (naposledy zadané cesty a odpovídající složky) |
+| **Esc** | zavřít návrhy; podruhé ukončit psaní |
 
 ## Požadavky
 
@@ -88,6 +101,7 @@ Při spuštění a pak každých šest hodin se aplikace podívá na nejnovějš
 - **Zkontrolovat aktualizace…** zkontroluje hned a řekne výsledek.
 - Verze 1.0 a 1.1 se samy aktualizovat neumí. Spusťte instalační příkaz ještě jednou a dostanete 1.2; od ní už aktualizace probíhají samy.
 - Aplikace se umí nahradit jen tam, kam smí zapisovat, což ve složce Aplikace normálně platí.
+- Vydání sestavuje GitHub Actions přímo z označeného zdrojového kódu ([release.yml](.github/workflows/release.yml)); co se změnilo, je v [seznamu změn](CHANGELOG.md).
 
 ## Doladění
 

@@ -14,17 +14,30 @@ Finder shows you where you are, but it does not let you simply type where you wa
 
 ## Features
 
-- The full path of every Finder window, always visible, updated as you navigate.
-- Click the bar to select the whole path, type or paste a new one, press **Enter** to go.
-- **Tab** completes folder names, **Esc** cancels.
+- The path of every Finder window, always visible, as folder names you can click to go there.
+- **⌘L** or **⌃L** (or a click on empty space in the bar) lets you type or paste a path; **Enter** goes there.
+- While you type, a list suggests recent paths and matching folders. **Tab** completes folder names, **Esc** cancels.
 - Understands `~`, relative paths (`..`, `subfolder`), `file://` URLs, quoted paths and paths escaped for the shell (`My\ Folder`).
 - A path to a file opens it in its default app, a path to an app starts it.
+- Windows network paths (`\\server\share`) open as `smb://server/share`.
 - Web addresses open in your browser: anything starting with `https://` or `http://`, and also `www.…` or a common domain such as `seznam.cz` when no file of that name exists. Other addresses (`smb://`, `mailto:` …) open in the app that handles them.
 - One bar per window. It follows the window when you move or resize it.
 - Menu bar icon with placement (below the toolbar, or at the bottom over Finder's path bar), fine position adjustment, launch at login, updates and quit.
 - Updates itself from this project's releases, see [Updates](#updates).
 - English and Czech interface.
 - No code injection, System Integrity Protection stays on, and no Accessibility or Screen Recording permission is needed. The only permission is *Automation → Finder*.
+
+## Using it
+
+| Do this | To |
+| --- | --- |
+| **⌘L** or **⌃L** | type in the bar of the front Finder window (works while Finder is active) |
+| Click a folder name | go to that folder |
+| Click empty space in the bar | type a path; the whole path is selected |
+| **Enter** | go to the folder, open the file or open the web address |
+| **Tab** | complete a folder name |
+| **↓** **↑** | move through the suggestions (recent paths and matching folders) |
+| **Esc** | close the suggestions; press again to stop typing |
 
 ## Requirements
 
@@ -88,6 +101,7 @@ When it starts and then every six hours, the app looks at the latest release of 
 - **Check for Updates…** checks right away and tells you the result.
 - Versions 1.0 and 1.1 cannot update themselves yet. Run the install command once more to get 1.2; from then on updates are automatic.
 - The app can only replace itself where it is allowed to write, which is normally the case in Applications.
+- Releases are built by GitHub Actions straight from the tagged source ([release.yml](.github/workflows/release.yml)); what changed is in the [changelog](CHANGELOG.md).
 
 ## Tuning
 

@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import Cocoa
 import ServiceManagement
 
@@ -221,22 +222,63 @@ enum PathResolver {
         return (path as NSString).standardizingPath
     }
 
-    /// Completes the last path component from existing folders.
-    static func complete(_ raw: String, relativeTo base: String) -> String? {
+    /// Folders whose names start with the last component of the typed text, as full paths.
+    static func folders(matching raw: String, relativeTo base: String) -> [String] {
         let text = expand(raw, relativeTo: base)
         let directory = text.hasSuffix("/") ? text : (text as NSString).deletingLastPathComponent
         let prefix = text.hasSuffix("/") ? "" : (text as NSString).lastPathComponent
-        guard let items = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return nil }
-        let folders = items.filter { name in
-            guard name.lowercased().hasPrefix(prefix.lowercased()), prefix.hasPrefix(".") || !name.hasPrefix(".") else { return false }
-            var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: (directory as NSString).appendingPathComponent(name), isDirectory: &isDirectory)
-                && isDirectory.boolValue
-        }
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return [] }
+        return items
+            .filter { name in
+                guard name.lowercased().hasPrefix(prefix.lowercased()), prefix.hasPrefix(".") || !name.hasPrefix(".") else { return false }
+                let path = (directory as NSString).appendingPathComponent(name)
+                var isDirectory: ObjCBool = false
+                return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+                    && !NSWorkspace.shared.isFilePackage(atPath: path)
+            }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .map { (directory as NSString).appendingPathComponent($0) }
+    }
+
+    /// Completes the last path component from existing folders.
+    static func complete(_ raw: String, relativeTo base: String) -> String? {
+        let folders = folders(matching: raw, relativeTo: base)
         guard let first = folders.first else { return nil }
-        if folders.count == 1 { return (directory as NSString).appendingPathComponent(first) + "/" }
-        let common = folders.dropFirst().reduce(first) { $0.commonPrefix(with: $1, options: .caseInsensitive) }
-        return common.count > prefix.count ? (directory as NSString).appendingPathComponent(common) : nil
+        if folders.count == 1 { return first + "/" }
+        let names = folders.map { ($0 as NSString).lastPathComponent }
+        let common = names.dropFirst().reduce(names[0]) { $0.commonPrefix(with: $1, options: .caseInsensitive) }
+        let typed = expand(raw, relativeTo: base)
+        let prefix = typed.hasSuffix("/") ? "" : (typed as NSString).lastPathComponent
+        guard common.count > prefix.count else { return nil }
+        return ((first as NSString).deletingLastPathComponent as NSString).appendingPathComponent(common)
+    }
+}
+
+/// Paths typed into a bar, most recent first.
+enum History {
+    private static let key = "history"
+
+    static var paths: [String] { UserDefaults.standard.stringArray(forKey: key) ?? [] }
+
+    static func add(_ path: String) {
+        let list = [path] + paths.filter { $0 != path }
+        UserDefaults.standard.set(Array(list.prefix(20)), forKey: key)
+    }
+}
+
+enum Suggestions {
+    /// Recent paths containing the typed text, then folders that complete it.
+    /// With nothing typed yet, just the recent paths.
+    static func list(for raw: String, current: String) -> [String] {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recent = History.paths.filter { $0 != current && FileManager.default.fileExists(atPath: $0) }
+        if text.isEmpty || text == current { return Array(recent.prefix(8)) }
+        if WebAddress.explicitURL(from: text) != nil { return [] }
+        let typed = PathResolver.expand(text, relativeTo: current)
+        var seen: Set<String> = [typed]
+        let candidates = recent.filter { $0.localizedCaseInsensitiveContains(text) }.prefix(3)
+            + PathResolver.folders(matching: text, relativeTo: current)
+        return Array(candidates.filter { seen.insert($0).inserted }.prefix(8))
     }
 }
 
@@ -247,9 +289,15 @@ enum WebAddress {
     /// Bare domains count only with these endings, so a mistyped `notes.txt` is not sent to the web.
     private static let commonDomains = ["com", "org", "net", "eu", "cz", "sk", "de", "at", "io", "info"]
 
-    /// `https://…`, `smb://…`, `mailto:…` and the like. These always win over paths.
+    /// `https://…`, `smb://…`, `mailto:…` and the like, plus Windows network paths (`\\server\share`).
+    /// These always win over paths.
     static func explicitURL(from raw: String) -> URL? {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("\\\\") {
+            let parts = text.dropFirst(2).split(separator: "\\").map(String.init)
+            guard let server = parts.first, !server.isEmpty else { return nil }
+            return makeURL("smb://" + parts.joined(separator: "/"))
+        }
         let schemeEnd = text.range(of: "://") ?? (text.lowercased().hasPrefix("mailto:") ? text.range(of: ":") : nil)
         guard let schemeEnd else { return nil }
         let scheme = text[..<schemeEnd.lowerBound]
@@ -338,10 +386,302 @@ final class PathField: NSTextField {
     }
 }
 
+/// One clickable folder name in the bar.
+final class CrumbButton: NSView {
+    var onClick: (() -> Void)?
+    private let label: NSTextField
+    private var hovering = false { didSet { needsDisplay = true } }
+
+    init(title: String) {
+        label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13)
+        label.lineBreakMode = .byTruncatingTail
+        super.init(frame: .zero)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var fittingSize: NSSize {
+        let size = label.fittingSize
+        return NSSize(width: min(size.width, 220) + 10, height: size.height + 4)
+    }
+
+    override func layout() {
+        super.layout()
+        label.frame = NSRect(x: 5, y: 2, width: max(bounds.width - 10, 0), height: max(bounds.height - 4, 0))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard hovering else { return }
+        NSColor.labelColor.withAlphaComponent(0.1).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        hovering = false
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+}
+
+/// The path as clickable folder names, like the address bar in Windows Explorer.
+/// A click on empty space switches to typing.
+final class BreadcrumbView: NSView {
+    var onNavigate: ((String) -> Void)?
+    var onEdit: (() -> Void)?
+
+    private var buttons: [CrumbButton] = []
+    private var separators: [NSTextField] = []
+    private let ellipsis = CrumbButton(title: "…")
+    private let gap: CGFloat = 1
+
+    var path = "" {
+        didSet { if path != oldValue { rebuild() } }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        ellipsis.onClick = { [weak self] in self?.onEdit?() }
+        addSubview(ellipsis)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Folder by folder; an external disk starts at its own name, as in Finder's path bar.
+    static func segments(of path: String) -> [(path: String, title: String)] {
+        guard path.hasPrefix("/") else { return [] }
+        let parts = (path as NSString).pathComponents
+        var current = "/"
+        var rest = parts.dropFirst()
+        if parts.count >= 3, parts[1] == "Volumes" {
+            current = "/Volumes/" + parts[2]
+            rest = parts.dropFirst(3)
+        }
+        var result = [(path: current, title: FileManager.default.displayName(atPath: current))]
+        for part in rest {
+            current = (current as NSString).appendingPathComponent(part)
+            result.append((path: current, title: FileManager.default.displayName(atPath: current)))
+        }
+        return result
+    }
+
+    private func rebuild() {
+        buttons.forEach { $0.removeFromSuperview() }
+        separators.forEach { $0.removeFromSuperview() }
+        let segments = Self.segments(of: path)
+        buttons = segments.map { segment in
+            let button = CrumbButton(title: segment.title)
+            button.onClick = { [weak self] in self?.onNavigate?(segment.path) }
+            addSubview(button)
+            return button
+        }
+        separators = segments.dropFirst().map { _ in
+            let separator = NSTextField(labelWithString: "›")
+            separator.font = .systemFont(ofSize: 13)
+            separator.textColor = .tertiaryLabelColor
+            addSubview(separator)
+            return separator
+        }
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let widths = buttons.map(\.fittingSize.width)
+        let separatorWidth = separators.first?.fittingSize.width ?? 0
+        func width(from first: Int) -> CGFloat {
+            let shown = widths[first...].reduce(0) { $0 + $1 + gap }
+                + CGFloat(max(widths.count - first - 1, 0)) * (separatorWidth + gap)
+            return shown + (first > 0 ? ellipsis.fittingSize.width + separatorWidth + 2 * gap : 0)
+        }
+        // leading folders give way when the window is too narrow
+        var first = 0
+        while first < buttons.count - 1, width(from: first) > bounds.width { first += 1 }
+
+        ellipsis.isHidden = true
+        buttons.forEach { $0.isHidden = true }
+        separators.forEach { $0.isHidden = true }
+        var x: CGFloat = 0
+        func place(_ view: NSView) {
+            let size = view.fittingSize
+            view.frame = NSRect(x: x, y: ((bounds.height - size.height) / 2).rounded(), width: size.width, height: size.height)
+            view.isHidden = false
+            x += size.width + gap
+        }
+        if first > 0 {
+            place(ellipsis)
+            place(separators[first - 1])
+        }
+        for index in buttons.indices where index >= first {
+            place(buttons[index])
+            if index < separators.count { place(separators[index]) }
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        return hit is CrumbButton ? hit : self
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onEdit?() }
+}
+
+/// One line in the suggestion list.
+final class SuggestionRow: NSView {
+    var onPick: (() -> Void)?
+    var isSelected = false {
+        didSet {
+            needsDisplay = true
+            label.textColor = isSelected ? .selectedMenuItemTextColor : .labelColor
+        }
+    }
+    private let label: NSTextField
+    private let icon = NSImageView()
+    private var hovering = false { didSet { needsDisplay = true } }
+
+    init(path: String) {
+        label = NSTextField(labelWithString: path)
+        label.font = .systemFont(ofSize: 13)
+        label.lineBreakMode = .byTruncatingMiddle
+        super.init(frame: .zero)
+        icon.image = NSWorkspace.shared.icon(forFile: path)
+        icon.imageScaling = .scaleProportionallyDown
+        addSubview(icon)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        icon.frame = NSRect(x: 8, y: ((bounds.height - 16) / 2).rounded(), width: 16, height: 16)
+        let height = label.fittingSize.height
+        label.frame = NSRect(x: 30, y: ((bounds.height - height) / 2).rounded(), width: bounds.width - 38, height: height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard isSelected || hovering else { return }
+        (isSelected ? NSColor.selectedContentBackgroundColor : NSColor.labelColor.withAlphaComponent(0.08)).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onPick?() }
+    }
+}
+
+/// The list under a bar while typing: recent paths and folders that complete the text.
+final class SuggestionPanel: NSPanel {
+    var onPick: ((String) -> Void)?
+    private(set) var items: [String] = []
+    private var rows: [SuggestionRow] = []
+    private var selected: Int?
+    private let effect = NSVisualEffectView()
+    private static let rowHeight: CGFloat = 24
+
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        level = .popUpMenu
+        hidesOnDeactivate = false
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        isReleasedWhenClosed = false
+        animationBehavior = .none
+        collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle, .fullScreenAuxiliary]
+        effect.material = .menu
+        effect.state = .active
+        effect.maskImage = Self.roundedMask(radius: 8)
+        contentView = effect
+    }
+
+    override var canBecomeKey: Bool { false }
+
+    var isShowing: Bool { isVisible && !items.isEmpty }
+
+    func show(_ items: [String], under bar: NSRect) {
+        self.items = items
+        selected = nil
+        guard !items.isEmpty else {
+            orderOut(nil)
+            return
+        }
+        let height = CGFloat(items.count) * Self.rowHeight + 8
+        var frame = NSRect(x: bar.minX, y: bar.minY - height - 2, width: max(bar.width, 320), height: height)
+        if let screen = NSScreen.screens.first(where: { $0.frame.intersects(bar) }), frame.minY < screen.visibleFrame.minY {
+            frame.origin.y = bar.maxY + 2  // no room below the bar
+        }
+        rows.forEach { $0.removeFromSuperview() }
+        rows = items.enumerated().map { index, path in
+            let row = SuggestionRow(path: path)
+            row.frame = NSRect(x: 4, y: height - 4 - CGFloat(index + 1) * Self.rowHeight, width: frame.width - 8, height: Self.rowHeight)
+            row.onPick = { [weak self] in self?.onPick?(path) }
+            effect.addSubview(row)
+            return row
+        }
+        setFrame(frame, display: true)
+        orderFront(nil)
+        invalidateShadow()
+    }
+
+    func hide() {
+        items = []
+        selected = nil
+        orderOut(nil)
+    }
+
+    /// Moves the highlight and returns the highlighted path.
+    func moveSelection(by step: Int) -> String? {
+        guard !items.isEmpty else { return nil }
+        let next = selected.map { ($0 + step + items.count) % items.count } ?? (step > 0 ? 0 : items.count - 1)
+        selected = next
+        for (index, row) in rows.enumerated() { row.isSelected = index == next }
+        return items[next]
+    }
+
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let size = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
+    }
+}
+
 final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
     let finderWindowID: Int
     private(set) var path = ""
     var onSubmit: ((BarPanel, String) -> Void)?
+    var onNavigate: ((BarPanel, String) -> Void)?
     /// Returns true when the Finder window has to come forward first and focus follows later.
     var onFocusRequest: ((BarPanel) -> Bool)?
     var onEditingEnded: (() -> Void)?
@@ -349,6 +689,8 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
     private let background = BarBackgroundView()
     private let icon = NSImageView()
     private let field = PathField()
+    private let crumbs = BreadcrumbView()
+    private let suggestions = SuggestionPanel()
 
     init(finderWindowID: Int) {
         self.finderWindowID = finderWindowID
@@ -380,9 +722,19 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
         field.delegate = self
         field.onFocus = { [weak self] in self?.background.highlight = .controlAccentColor }
         icon.imageScaling = .scaleProportionallyDown
+        crumbs.onNavigate = { [weak self] path in
+            guard let self else { return }
+            self.onNavigate?(self, path)
+        }
+        crumbs.onEdit = { [weak self] in self?.requestFocus() }
+        suggestions.onPick = { [weak self] path in
+            guard let self else { return }
+            self.suggestions.hide()
+            self.onSubmit?(self, path)
+        }
 
         contentView = background
-        for view in [icon, field] as [NSView] {
+        for view in [icon, field, crumbs] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -394,7 +746,19 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
             field.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
             field.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -10),
             field.centerYAnchor.constraint(equalTo: background.centerYAnchor),
+            crumbs.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 1),
+            crumbs.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -6),
+            crumbs.topAnchor.constraint(equalTo: background.topAnchor),
+            crumbs.bottomAnchor.constraint(equalTo: background.bottomAnchor),
         ])
+        showEditor(false)
+    }
+
+    /// Folder names to click while idle, the editable path while typing (or when there is no path).
+    private func showEditor(_ editing: Bool) {
+        let useField = editing || path.isEmpty
+        field.isHidden = !useField
+        crumbs.isHidden = useField
     }
 
     // The panel takes the keyboard only while typing; otherwise AppKit would hand it to another bar instead of Finder.
@@ -404,6 +768,7 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
     override var canBecomeMain: Bool { false }
 
     func prepareForEditing() {
+        showEditor(true)
         acceptsKey = true
         field.refusesFirstResponder = false
         makeKey()
@@ -424,6 +789,8 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
                 : NSWorkspace.shared.icon(forFile: newPath)
         }
         if !isEditing, field.stringValue != path { field.stringValue = path }
+        crumbs.path = newPath
+        showEditor(isEditing)
     }
 
     func requestFocus() {
@@ -438,6 +805,7 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
     }
 
     func endEditing(revert: Bool) {
+        suggestions.hide()
         if revert { field.stringValue = path }
         makeFirstResponder(nil)
         background.highlight = nil
@@ -479,13 +847,20 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
+            suggestions.hide()
             onSubmit?(self, textView.string)
         case #selector(NSResponder.cancelOperation(_:)):
-            endEditing(revert: true)
+            // the first Esc closes the list, the next one gives up typing
+            if suggestions.isShowing { suggestions.hide() } else { endEditing(revert: true) }
+        case #selector(NSResponder.moveDown(_:)), #selector(NSResponder.moveUp(_:)):
+            if !suggestions.isShowing { showSuggestions(for: textView.string) }
+            if let picked = suggestions.moveSelection(by: selector == #selector(NSResponder.moveDown(_:)) ? 1 : -1) {
+                replaceText(of: textView, with: picked)
+            }
         case #selector(NSResponder.insertTab(_:)):
             if let completed = PathResolver.complete(textView.string, relativeTo: path) {
-                textView.string = completed
-                textView.setSelectedRange(NSRange(location: (completed as NSString).length, length: 0))
+                replaceText(of: textView, with: completed)
+                showSuggestions(for: completed)
             } else {
                 NSSound.beep()
             }
@@ -497,16 +872,71 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
         return true
     }
 
+    func controlTextDidChange(_ notification: Notification) {
+        showSuggestions(for: field.currentEditor()?.string ?? field.stringValue)
+    }
+
     func controlTextDidEndEditing(_ notification: Notification) {
         field.refusesFirstResponder = true
         background.highlight = nil
+        suggestions.hide()
+        showEditor(false)
+    }
+
+    private func showSuggestions(for text: String) {
+        suggestions.show(Suggestions.list(for: text, current: path), under: frame)
+    }
+
+    private func replaceText(of textView: NSTextView, with text: String) {
+        textView.string = text
+        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
     }
 
     func windowDidResignKey(_ notification: Notification) {
         acceptsKey = false
+        suggestions.hide()
         guard isEditing else { return }
         field.stringValue = path
         makeFirstResponder(nil)
+    }
+}
+
+// MARK: - Keyboard shortcut
+
+/// ⌘L and ⌃L jump into the bar of the front Finder window, like ⌘L in a browser or Ctrl+L in Windows Explorer.
+/// They are registered only while Finder is the active app, so other apps keep their own shortcuts.
+@MainActor
+final class Shortcuts {
+    var onPress: (() -> Void)?
+    private var hotKeys: [EventHotKeyRef] = []
+    private static weak var current: Shortcuts?
+
+    init() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+            MainActor.assumeIsolated { Shortcuts.current?.onPress?() }
+            return noErr
+        }, 1, &spec, nil, nil)
+        Shortcuts.current = self
+    }
+
+    var isEnabled = false {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            if isEnabled {
+                for (index, modifiers) in [cmdKey, controlKey].enumerated() {
+                    var hotKey: EventHotKeyRef?
+                    let id = EventHotKeyID(signature: OSType(0x4650_4231), id: UInt32(index + 1))  // "FPB1"
+                    if RegisterEventHotKey(UInt32(kVK_ANSI_L), UInt32(modifiers), id, GetApplicationEventTarget(), 0, &hotKey) == noErr,
+                       let hotKey {
+                        hotKeys.append(hotKey)
+                    }
+                }
+            } else {
+                hotKeys.forEach { UnregisterEventHotKey($0) }
+                hotKeys.removeAll()
+            }
+        }
     }
 }
 
@@ -515,6 +945,7 @@ final class BarPanel: NSPanel, NSTextFieldDelegate, NSWindowDelegate {
 @MainActor
 final class Controller: NSObject {
     private let bridge = FinderBridge()
+    private let shortcuts = Shortcuts()
     private var windows: [Int: FinderWindow] = [:]
     private var frontWindowID: Int?
     private var bars: [Int: BarPanel] = [:]
@@ -535,7 +966,9 @@ final class Controller: NSObject {
             self?.kick()
             if event.type == .leftMouseUp { after(0.1) { self?.poll() } }
         }
+        shortcuts.onPress = { [weak self] in self?.focusFrontBar() }
         tick()
+        shortcuts.isEnabled = finderIsFrontmost
     }
 
     func refresh() { kick() }
@@ -548,6 +981,17 @@ final class Controller: NSObject {
     @objc private func activeApplicationChanged() {
         poll()
         kick()
+        shortcuts.isEnabled = finderIsFrontmost
+    }
+
+    /// ⌘L / ⌃L: start typing in the bar of the front Finder window.
+    private func focusFrontBar() {
+        let front = onScreenWindows().first { $0.pid == finderPID && $0.layer == 0 && bars[$0.id] != nil }
+        guard let front, let bar = bars[front.id], bar.isVisible else {
+            NSSound.beep()
+            return
+        }
+        bar.beginEditing()
     }
 
     private var finderIsFrontmost: Bool {
@@ -734,6 +1178,7 @@ final class Controller: NSObject {
         if let bar = bars[id] { return bar }
         let bar = BarPanel(finderWindowID: id)
         bar.onSubmit = { [weak self] bar, text in self?.submit(text, from: bar) }
+        bar.onNavigate = { [weak self] bar, path in self?.show(folder: path, in: bar) }
         bar.onEditingEnded = { [weak self] in self?.layout() }
         bar.onFocusRequest = { [weak self] bar in
             guard let self, !(self.finderIsFrontmost && self.frontWindowID == bar.finderWindowID) else { return false }
@@ -760,12 +1205,16 @@ final class Controller: NSObject {
         }
         var isDirectory: ObjCBool = false
         FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        History.add(path)
         // files, apps and document packages open in their app, like in Windows Explorer
         guard isDirectory.boolValue, !NSWorkspace.shared.isFilePackage(atPath: path) else {
             open(URL(fileURLWithPath: path), from: bar)
             return
         }
+        show(folder: path, in: bar)
+    }
 
+    private func show(folder path: String, in bar: BarPanel) {
         bar.endEditing(revert: false)
         bar.update(path: path)
         bridge.show(folder: path, inWindow: bar.finderWindowID) { [weak self] ok in
@@ -1007,6 +1456,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(L10n.text("Not allowed to control Finder – open Settings…", "Chybí oprávnění ovládat Finder – otevřít Nastavení…"), #selector(openAutomationSettings), to: menu)
             menu.addItem(.separator())
         }
+        let hint = menu.addItem(withTitle: L10n.text("Jump to the Address: ⌘L or ⌃L", "Skok do adresy: ⌘L nebo ⌃L"), action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(.separator())
         add(L10n.text("Below the Toolbar", "Pod panelem nástrojů"), #selector(placeTop), to: menu).state = Prefs.placement == .top ? .on : .off
         add(L10n.text("At the Bottom, over the Path Bar", "Dole místo řádku cesty"), #selector(placeBottom), to: menu).state = Prefs.placement == .bottom ? .on : .off
         menu.addItem(.separator())
