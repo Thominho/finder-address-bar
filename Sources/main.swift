@@ -754,7 +754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         Prefs.registerDefaults()
-        offerRowSetupIfNeeded()
+        offerSetupIfNeeded()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "folder", accessibilityDescription: L10n.text("Finder Address Bar", "Adresní řádek Finderu"))
         let menu = NSMenu()
@@ -764,29 +764,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Asked once, on first launch, before macOS shows its own prompt about controlling Finder.
-    private func offerRowSetupIfNeeded() {
+    private func offerSetupIfNeeded() {
         let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: "didOfferRowSetup") else { return }
+        let askRow = !defaults.bool(forKey: "didOfferRowSetup") && !FinderTabBar.isShown
+        let askLogin = !defaults.bool(forKey: "didOfferLoginItem") && SMAppService.mainApp.status != .enabled
         defaults.set(true, forKey: "didOfferRowSetup")
-        guard !FinderTabBar.isShown else { return }
+        defaults.set(true, forKey: "didOfferLoginItem")
+        guard askRow || askLogin else { return }
 
-        let question = NSAlert()
-        question.messageText = L10n.text("Reserve a row for the address bar?", "Vyhradit adresnímu řádku vlastní řádek?")
-        question.informativeText = L10n.text(
-            "Finder can keep an empty row under its toolbar (its tab bar). The address bar then sits on that row and covers nothing. Without it, the bar lies over the column headers or the first item.",
-            "Finder umí pod panelem nástrojů držet prázdný řádek (řádek panelů). Adresní řádek pak leží na něm a nic nezakrývá. Bez něj překrývá záhlaví sloupců nebo první položku.")
-        question.addButton(withTitle: L10n.text("Reserve Row", "Vyhradit řádek"))
-        question.addButton(withTitle: L10n.text("Not Now", "Teď ne"))
+        var explanation: [String] = []
+        if askRow {
+            explanation.append(L10n.text(
+                "Finder can keep an empty row under its toolbar (its tab bar). The address bar then sits on that row and covers nothing.",
+                "Finder umí pod panelem nástrojů držet prázdný řádek (řádek panelů). Adresní řádek pak leží na něm a nic nezakrývá."))
+        }
+        if askLogin {
+            explanation.append(L10n.text(
+                "Without starting at login, the bar disappears after a restart until you open the app again.",
+                "Bez spouštění po přihlášení řádek po restartu zmizí, dokud aplikaci znovu neotevřete."))
+        }
+
+        let rowBox = NSButton(checkboxWithTitle: L10n.text("Reserve a row in Finder", "Vyhradit ve Finderu řádek"), target: nil, action: nil)
+        let loginBox = NSButton(checkboxWithTitle: L10n.text("Start at login", "Spouštět po přihlášení"), target: nil, action: nil)
+        rowBox.state = .on
+        loginBox.state = .on
+        let boxes = NSStackView(views: (askRow ? [rowBox] : []) + (askLogin ? [loginBox] : []))
+        boxes.orientation = .vertical
+        boxes.alignment = .leading
+        boxes.setFrameSize(boxes.fittingSize)
+
+        let alert = NSAlert()
+        alert.messageText = L10n.text("Set up Finder Address Bar", "Nastavení adresního řádku Finderu")
+        alert.informativeText = explanation.joined(separator: "\n\n")
+        alert.accessoryView = boxes
+        alert.addButton(withTitle: L10n.text("Continue", "Pokračovat"))
         NSApp.activate(ignoringOtherApps: true)
-        guard question.runModal() == .alertFirstButtonReturn else { return }
-        FinderTabBar.show()
+        alert.runModal()
 
-        let done = NSAlert()
-        done.messageText = L10n.text("New Finder windows now have the row", "Nová okna Finderu už řádek mají")
-        done.informativeText = L10n.text(
-            "In windows that are already open, choose View → Show Tab Bar.",
-            "V oknech, která už jsou otevřená, zvolte Zobrazení → Zobrazit řádek panelů.")
-        done.runModal()
+        if askLogin, loginBox.state == .on {
+            do { try SMAppService.mainApp.register() } catch { NSLog("FinderPathBar: could not add the login item: \(error)") }
+        }
+        if askRow, rowBox.state == .on {
+            FinderTabBar.show()
+            let done = NSAlert()
+            done.messageText = L10n.text("New Finder windows now have the row", "Nová okna Finderu už řádek mají")
+            done.informativeText = L10n.text(
+                "In windows that are already open, choose View → Show Tab Bar.",
+                "V oknech, která už jsou otevřená, zvolte Zobrazení → Zobrazit řádek panelů.")
+            done.runModal()
+        }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

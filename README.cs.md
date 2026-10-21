@@ -61,9 +61,11 @@ open FinderPathBar.app
 
 ### První spuštění
 
-1. Aplikace se zeptá, jestli má ve Finderu **vyhradit řádek**. Odpovězte ano: Finder pak pod panelem nástrojů drží prázdný řádek (řádek panelů) a adresní řádek leží přesně na něm, takže nic nezakrývá. Nová okna Finderu ho dostanou automaticky; v oknech, která už jsou otevřená, jednou zvolte **Zobrazení → Zobrazit řádek panelů**.
+1. Aplikace nabídne dvě volby, obě zaškrtnuté. Nechte je tak a klikněte na **Pokračovat**:
+   - **Vyhradit ve Finderu řádek**: Finder pak pod panelem nástrojů drží prázdný řádek (řádek panelů) a adresní řádek leží přesně na něm, takže nic nezakrývá. Nová okna Finderu ho dostanou automaticky; v oknech, která už jsou otevřená, jednou zvolte **Zobrazení → Zobrazit řádek panelů**.
+   - **Spouštět po přihlášení**: jinak řádek po restartu zmizí, dokud aplikaci znovu neotevřete.
 2. macOS se zeptá, jestli smí FinderPathBar **ovládat Finder**. Povolte to, jinak aplikace nezjistí ani nezmění složku, kterou okno zobrazuje.
-3. V řádku nabídek se objeví ikona složky. Pokud si chcete řádek nechat, zapněte tam **Spouštět po přihlášení**.
+3. V řádku nabídek se objeví ikona složky. Všechno ostatní je v její nabídce.
 
 Bez vyhrazeného řádku adresní řádek funguje taky, jen v zobrazení seznamu leží přes záhlaví sloupců a v ostatních zobrazeních přes horní část první položky.
 
@@ -97,6 +99,11 @@ defaults write local.finderpathbar toolbarHeight -float 52
 | `windowCornerRadius` | 26 | Zaoblení rohu okna (umístění dole) |
 
 Když se něco chová divně, příkaz `defaults write local.finderpathbar debug -bool true` zapne výpis toho, co aplikace dělá (viz aplikace Konzole).
+
+## Když něco nefunguje
+
+- **Po restartu řádek zmizel.** Aplikace neběží. Otevřete FinderPathBar ze složky Aplikace a v nabídce u její ikony v řádku nabídek zapněte **Spouštět po přihlášení**.
+- **Řádek je vidět, ale neukazuje cestu.** FinderPathBar nemá povolení ovládat Finder. Povolte ho v **Nastavení systému → Soukromí a zabezpečení → Automatizace**.
 
 ## Omezení
 

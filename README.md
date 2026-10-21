@@ -61,9 +61,11 @@ open FinderPathBar.app
 
 ### First launch
 
-1. The app asks whether it should **reserve a row** in Finder. Say yes: Finder then keeps an empty row under the toolbar (its tab bar) and the address bar sits exactly on it, so it covers nothing. New Finder windows get the row automatically; in windows that are already open choose **View → Show Tab Bar** once.
+1. The app offers two settings, both ticked. Keep them and click **Continue**:
+   - **Reserve a row in Finder**: Finder then keeps an empty row under the toolbar (its tab bar) and the address bar sits exactly on it, so it covers nothing. New Finder windows get the row automatically; in windows that are already open choose **View → Show Tab Bar** once.
+   - **Start at login**: otherwise the bar disappears after a restart until you open the app again.
 2. macOS asks whether FinderPathBar may **control Finder**. Allow it, otherwise the app cannot read or change the folder a window shows.
-3. A folder icon appears in the menu bar. Turn on **Launch at Login** there if you want to keep the bar.
+3. A folder icon appears in the menu bar. Everything else is in its menu.
 
 Without the reserved row the bar still works, but it lies over the column headers in list view, or over the top of the first item in the other views.
 
@@ -97,6 +99,11 @@ defaults write local.finderpathbar toolbarHeight -float 52
 | `windowCornerRadius` | 26 | Corner radius of the window (bottom placement) |
 
 If something misbehaves, `defaults write local.finderpathbar debug -bool true` makes the app log what it does (see Console.app).
+
+## Troubleshooting
+
+- **The bar is gone after a restart.** The app is not running. Open FinderPathBar from Applications and turn on **Launch at Login** in its menu bar icon.
+- **The bar is there but shows no path.** FinderPathBar is not allowed to control Finder. Allow it in **System Settings → Privacy & Security → Automation**.
 
 ## Limitations
 
