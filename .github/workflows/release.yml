@@ -1,0 +1,44 @@
+name: Release
+
+# Pushing a tag such as v1.3.0 builds the app and publishes it as a GitHub release,
+# which the app's updater then installs for everyone.
+# Tags with a suffix (v1.3.0-rc1) become pre-releases, which the updater ignores.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the version
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
+          tag="${GITHUB_REF_NAME#v}"
+          tag="${tag%%-*}"
+          if [ "$version" != "$tag" ] && [ "$version.0" != "$tag" ]; then
+            echo "::error::Info.plist says $version but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Build
+        run: ./build.sh --zip
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v tag="${GITHUB_REF_NAME%%-*}" '/^## / { found = ($2 == tag); next } found' CHANGELOG.md > notes.md
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" FinderPathBar.zip \
+            --title "Finder Address Bar ${GITHUB_REF_NAME#v}" --notes-file notes.md "${flags[@]}"
